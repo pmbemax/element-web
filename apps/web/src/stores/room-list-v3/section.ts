@@ -79,9 +79,14 @@ function isValidCustomSection(value: unknown): value is CustomSection {
  */
 export type CustomSectionsData = Record<CustomTag, CustomSection>;
 /**
- * Ordered list of custom section tags.
+ * Union of all valid section tags (default + custom).
  */
-export type OrderedCustomSections = CustomTag[];
+export type SectionTag = CustomTag | DefaultTagID.Favourite | DefaultTagID.LowPriority | typeof CHATS_TAG;
+
+/**
+ * Ordered list of section tags (default + custom).
+ */
+export type CustomSections = SectionTag[];
 
 /**
  * Retrieves the custom sections data from the settings.
@@ -102,11 +107,49 @@ export function getCustomSectionData(): CustomSectionsData {
  * Retrieves the ordered list of custom section tags from the settings.
  * If the settings contain tags that are not present in the custom section data, they will be filtered out and the settings will be updated to remove the unknown tags.
  */
-export function getOrderedCustomSections(): OrderedCustomSections {
+export function getOrderedCustomSections(): CustomSections {
     const sectionData = getCustomSectionData();
     const rawValue = SettingsStore.getValue("RoomList.OrderedCustomSections");
-    const orderedSections: OrderedCustomSections = Array.isArray(rawValue) ? rawValue : [];
+    const orderedSections: CustomSections = Array.isArray(rawValue) ? rawValue : [];
     return orderedSections.filter((tag) => tag in sectionData);
+}
+
+const DEFAULT_SECTION_TAGS = new Set<string>([DefaultTagID.Favourite, CHATS_TAG, DefaultTagID.LowPriority]);
+
+/**
+ * Returns the full ordered list of all sections (default + custom).
+ * If the stored order includes all three default tags, it is used as-is (minus deleted custom sections),
+ * with any new custom sections inserted before LowPriority.
+ * Falls back to the canonical order when the stored value is empty or contains no default tags.
+ */
+export function getOrderedSections(): SectionTag[] {
+    const customData = getCustomSectionData();
+    const availableCustomTags = Object.keys(customData).filter(isCustomSectionTag) as CustomTag[];
+
+    const rawValue = SettingsStore.getValue("RoomList.OrderedCustomSections");
+    const tags: SectionTag[] = Array.isArray(rawValue) ? (rawValue as SectionTag[]) : [];
+
+    // Keep only valid tags (remove deleted custom sections, keep all defaults)
+    const result = tags.filter((t) => DEFAULT_SECTION_TAGS.has(t) || (isCustomSectionTag(t) && t in customData));
+
+    // Ensure all 3 default tags are present
+    for (const tag of [DefaultTagID.Favourite, CHATS_TAG, DefaultTagID.LowPriority] as SectionTag[]) {
+        if (!result.includes(tag)) result.push(tag);
+    }
+
+    // Append any new custom tags not yet in the list, before LowPriority
+    for (const tag of availableCustomTags) {
+        if (!result.includes(tag)) {
+            const lpIndex = result.indexOf(DefaultTagID.LowPriority);
+            if (lpIndex !== -1) {
+                result.splice(lpIndex, 0, tag);
+            } else {
+                result.push(tag);
+            }
+        }
+    }
+
+    return result;
 }
 
 /**
