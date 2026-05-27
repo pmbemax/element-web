@@ -130,7 +130,7 @@ jobs:
                   test -f ./dist/Element*.dmg
                   test -f ./dist/Element*-mac.zip
                   find dist -maxdepth 2 -type f -print | sort
-                  shasum -a 256 dist/* | tee dist/SHA256SUMS.txt
+                  find dist -maxdepth 1 -type f -print0 | xargs -0 shasum -a 256 | tee dist/SHA256SUMS.txt
 
             - name: Upload macOS artifacts
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
