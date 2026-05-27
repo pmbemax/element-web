@@ -1,0 +1,143 @@
+name: PMBE macOS DMG
+
+on:
+    workflow_dispatch:
+        inputs:
+            source_ref:
+                description: "PMBE source ref to package"
+                required: true
+                default: "pmbe/release/v1.12.20"
+            version:
+                description: "PMBE version string to embed in the webapp"
+                required: true
+                default: "1.12.20+pmbe.1"
+            targets:
+                description: "electron-builder mac targets"
+                required: true
+                default: "dmg zip"
+
+permissions:
+    contents: read
+
+defaults:
+    run:
+        shell: bash
+
+jobs:
+    webapp:
+        name: Build PMBE webapp
+        runs-on: ubuntu-24.04
+        timeout-minutes: 90
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+              with:
+                  ref: ${{ inputs.source_ref }}
+                  persist-credentials: false
+
+            - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+            - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+              with:
+                  node-version-file: apps/desktop/.node-version
+                  cache: "pnpm"
+
+            - name: Install workspace dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Build PMBE Element Web
+              env:
+                  VERSION: ${{ inputs.version }}
+              run: |
+                  pnpm --filter element-web build
+                  test "$(cat apps/web/webapp/version)" = "$VERSION"
+
+            - name: Upload PMBE webapp
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+              with:
+                  name: pmbe-webapp
+                  path: apps/web/webapp
+                  retention-days: 7
+
+    macos-dmg:
+        name: Build unsigned macOS DMG/ZIP
+        needs: webapp
+        runs-on: macos-26
+        timeout-minutes: 120
+        steps:
+            - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90
+              with:
+                  xcode-version: latest-stable
+
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+              with:
+                  ref: ${{ inputs.source_ref }}
+                  persist-credentials: false
+
+            - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+              with:
+                  name: pmbe-webapp
+                  path: apps/desktop/webapp
+
+            - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+              with:
+                  python-version: "3.13"
+
+            - name: Install DMG Quartz helper
+              run: sudo pip3 install pyobjc-framework-Quartz
+
+            - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+            - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+              with:
+                  node-version-file: apps/desktop/.node-version
+                  cache: "pnpm"
+
+            - name: Install Element Desktop dependencies only
+              working-directory: apps/desktop
+              run: pnpm install --frozen-lockfile --filter element-desktop
+
+            - name: Prepare Desktop webapp.asar and variant
+              working-directory: apps/desktop
+              env:
+                  VERSION: ${{ inputs.version }}
+              run: |
+                  cp element.io/release/build.json variant.json
+                  pnpm run asar-webapp
+                  test "$(node scripts/get-version.ts)" = "$VERSION"
+                  pnpm --silent electron --no-sandbox --version > electronVersion
+                  cat package.json | jq -c .hakDependencies | sha1sum > hakHash
+                  find hak -type f -print0 | xargs -0 sha1sum >> hakHash
+                  find scripts/hak -type f -print0 | xargs -0 sha1sum >> hakHash
+
+            - name: Install Rust targets for universal native modules
+              run: |
+                  rustup toolchain install stable --profile minimal --no-self-update
+                  rustup default stable
+                  rustup target add aarch64-apple-darwin
+                  rustup target add x86_64-apple-darwin
+
+            - name: Build native modules
+              working-directory: apps/desktop
+              run: pnpm run build:native:universal
+
+            - name: Build unsigned PMBE macOS app
+              working-directory: apps/desktop
+              env:
+                  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+                  VARIANT_PATH: variant.json
+                  VERSION: ${{ inputs.version }}
+                  TARGETS: ${{ inputs.targets }}
+              run: |
+                  pnpm run build:universal --publish never -m ${TARGETS}
+                  test -f ./dist/Element*.dmg
+                  test -f ./dist/Element*-mac.zip
+                  find dist -maxdepth 2 -type f -print | sort
+                  shasum -a 256 dist/* | tee dist/SHA256SUMS.txt
+
+            - name: Upload macOS artifacts
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+              with:
+                  name: pmbe-element-macos-unsigned
+                  path: |
+                      apps/desktop/dist/*.dmg
+                      apps/desktop/dist/*-mac.zip
+                      apps/desktop/dist/SHA256SUMS.txt
+                  retention-days: 7
